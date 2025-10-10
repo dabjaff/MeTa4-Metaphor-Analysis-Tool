@@ -25,6 +25,9 @@ def show_tutorial() -> None:
     print('\nWelcome to MeTa4: Metaphor Analysis Tool!\nThis tool analyzes metaphor usage in text corpora using the MIPVU methodology.\nKey terms:\n  - Lemma: Base form of a word (e.g., \'run\' for \'running\', \'runs\').\n  - MRW: Metaphor-Related Word, identified by MIPVU criteria.\n  - LU: Lexical Unit, the denominator for metaphor density.\n  - CQL: Corpus Query Language for pattern searches (e.g., [lemma="run"] [pos="VB.*"]).\n\nHow to use:\n1. Explore the VUAMC corpus or upload your own XML/CSV/TSV file.\n2. Choose an analysis:\n   • Single Lemma: Analyze a specific lemma (e.g., \'run\').\n   • Batch Lemma: Analyze multiple lemmas.\n   • Collocations: Find words co-occurring with a lemma.\n   • Pattern Search: Use regex or CQL for complex queries.\n3. Results are saved in \'results/\' with timestamps.\n\nPress [R] to return to the previous menu at any time, [H] for help or [T] for this tutorial.\n        ')
 
 def analysis_explorer(df: pd.DataFrame, corpus_name: str='VUAMC') -> None:
+    # Ensure positional indices are 0..N-1 for all downstream lookups (KWIC/context)
+    df = df.reset_index(drop=True)
+
     num_mrw, denom = mipvu_counts(df)
     print(f'\n=== {corpus_name} Overview (MIPVU) ===')
     print(f'  Lexical Units (LUs): {denom}')
@@ -268,7 +271,8 @@ def genre_level_explorer() -> None:
     if not chosen:
         print('Unrecognized selection. Returning.')
         return
-    df_g = vuamc[vuamc['genre'].astype(str).str.lower() == chosen.lower()].copy()
+    # Critical: reset index on the genre slice so positions are 0..N-1
+    df_g = vuamc[vuamc['genre'].astype(str).str.lower() == chosen.lower()].copy().reset_index(drop=True)
     print(f'\n\nVUAMC Explorer — Genre: {chosen}\n')
     analysis_explorer(ensure_normalized(df_g), f'VUAMC:{chosen}')
 

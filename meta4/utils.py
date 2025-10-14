@@ -4,7 +4,14 @@ import unicodedata
 from datetime import datetime
 from typing import List, Iterable, Callable, Optional, Any, Tuple
 import pandas as pd
-from . import config
+try:
+    from . import config
+except Exception:
+    class _Cfg:
+        HELP = {}
+        logger = None
+        CONFIG = {'PER_1000': 1000}
+    config = _Cfg()
 __all__ = ['ask', 'get_menu_choice', 'show_help', 'get_timestamp', 'safe_slug', 'format_table', 'require_nonempty_df', '_merge_pipe', '_norm_id', 'infer_genre', '_SEG_SUFFIX', '_cache_put']
 
 def ask(prompt: str, context: str | None=None) -> Optional[str]:
@@ -139,3 +146,31 @@ def infer_genre(fid: str) -> str:
         return config.prefix_to_genre.get(key, 'Unknown')
     except Exception:
         return 'Unknown'
+
+def ensure_normalized(df):
+    local = df.copy()
+    lower = {c.lower().strip(): c for c in local.columns}
+    ren = {}
+    for target, syns in {
+        "lemma": ["lemma","lem","base","base_form","lemmatized","lema"],
+        "word": ["word","token","text","orth","form"],
+        "metaphor_function": ["metaphor_function","mrw","is_mrw","metaphor","metaphorflag","metaphor_flag","mrw_flag","mrw?","mipvu_mrw"],
+        "pos": ["pos","upos","xpos","tag","postag","pos_tag","pos broad","pos_broad"],
+    }.items():
+        for s in syns:
+            if s in lower:
+                ren[lower[s]] = target
+                break
+    local = local.rename(columns=ren)
+    if "lemma" not in local.columns and "word" in local.columns:
+        local["lemma"] = local["word"].astype(str).str.lower()
+    if "pos" not in local.columns:
+        for c in list(df.columns):
+            if c.lower() in ["upos","xpos","tag","postag","pos_tag","pos broad","pos_broad","pos"]:
+                local["pos"] = df[c]
+                break
+    missing = [c for c in ["lemma","word","metaphor_function","pos"] if c not in local.columns]
+    if missing:
+        req = "lemma, word, metaphor_function, pos"
+        raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}. Required: {req}. Headers are case-insensitive but must match by name. Tip: press [I] for Instructions or [E] for an example CSV.")
+    return local

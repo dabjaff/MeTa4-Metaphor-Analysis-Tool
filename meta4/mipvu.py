@@ -1,12 +1,17 @@
 from __future__ import annotations
 import pandas as pd
 from typing import Tuple, Optional
-from . import config
+from .schemas import CANON_COL_MAP
+try:
+    from . import config
+    logger = getattr(config, 'logger', None)
+except Exception:
+    logger = None
 from .utils import require_nonempty_df
 __all__ = ['normalize_dataframe', 'ensure_normalized', 'apply_mipvu_filters', 'mipvu_counts', 'prepare_analysis']
 
 def normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    CANON = {'File_ID': 'file_id', 'Genre': 'genre', 'Sentence_ID': 'sentence_id', 'Original_Word': 'word', 'Lemma': 'lemma', 'POS': 'pos', 'Metaphor': 'metaphor_function', 'Type': 'type', 'Subtype': 'subtype', 'MFlag': 'mflag', 'xml:id': 'xml_id', 'corresp': 'corresp'}
+    CANON = CANON_COL_MAP
     col_map = {c: CANON.get(c, c.lower()) for c in df.columns}
     df = df.rename(columns=col_map).copy()
     for c in ['lemma', 'pos', 'metaphor_function', 'type', 'subtype', 'mflag', 'genre']:
@@ -45,7 +50,7 @@ def apply_mipvu_filters(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, pd.S
             bad = df_f['genre'].astype(str).str.lower().eq('news') & df_f['lemma'].astype(str).str.lower().eq('of')
             corrected = bad.sum()
             if corrected > 0:
-                config.logger.debug(f"Corrected {corrected} 'of' MRWs in News")
+                logger.debug(f"Corrected {corrected} 'of' MRWs in News")
             mrw_mask &= ~bad
     except Exception:
         pass
@@ -63,5 +68,32 @@ def prepare_analysis(df: pd.DataFrame, lemma: str) -> Tuple[pd.DataFrame, pd.Ser
     df_f, den, mrw = apply_mipvu_filters(df)
     hit_count = (df_f['lemma'] == lemma).sum()
     if hit_count == 0:
-        config.logger.warning(f"This lemma '{lemma}' is not found in the corpus")
+        logger.warning(f"This lemma '{lemma}' is not found in the corpus")
     return (df_f, den, mrw, hit_count)
+
+
+def apply_mipvu_filters(df):
+    local = df.copy()
+    cols = {c.lower(): c for c in local.columns}
+    if "subtype" in cols:
+        st = cols["subtype"]
+        mf_col = cols.get("metaphor_function", "metaphor_function")
+        st_vals = local[st].astype(str).str.upper().str.strip()
+        mf_vals = local[mf_col].astype(str).str.upper().str.strip() if mf_col in local.columns else local.assign(_="")["_"]
+        den = ~st_vals.isin({"DFMA", "DFMA_PUNCT"}) & (mf_vals != "DFMA")
+        mrw = (mf_vals == "MRW")
+        return local, den, mrw
+    for need in ["lemma", "word", "metaphor_function", "pos"]:
+        if need not in cols:
+            raise ValueError(f"Missing required columns: {need}. Required: lemma, word, metaphor_function, pos. Headers are case-insensitive but must match by name. Tip: press [I] for Instructions or [E] for an example CSV.")
+    mf_col = cols["metaphor_function"]
+    mf = local[mf_col].astype(str).str.upper().str.strip()
+    den = ~mf.isin({"DFMA", "DFMA_PUNCT"})
+    mrw = (mf == "MRW")
+    return local, den, mrw
+
+def mipvu_counts(df):
+    _, den, mrw = apply_mipvu_filters(df)
+    if isinstance(den, int) and isinstance(mrw, int):
+        return int(mrw), int(den)
+    return int((mrw & den).sum()), int(den.sum())

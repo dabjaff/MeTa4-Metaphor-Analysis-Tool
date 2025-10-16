@@ -1,4 +1,0 @@
-REQUIRED_MINIMAL={"word"}
-REQUIRED_FOR_MIPVU={"word","lemma","pos","metaphor_function"}
-OPTIONAL_BOUNDS={"sentence_id","paragraph_id"}
-CANON_COL_MAP={"File_ID":"file_id","fileID":"file_id","file-id":"file_id","file":"file_id","Genre":"genre","Sentence_ID":"sentence_id","sent_id":"sentence_id","SentenceId":"sentence_id","Paragraph_ID":"paragraph_id","para_id":"paragraph_id","Token":"word","token":"word","Word":"word","Lemma":"lemma","LEMMA":"lemma","POS":"pos","PoS":"pos","pos_tag":"pos","upos":"pos","xpos":"pos","tag":"pos","MRW":"mrw","Metaphor":"mrw","is_mrw":"mrw","Type":"type","Subtype":"subtype","Function":"metaphor_function","MFlag":"mflag","xml:id":"xml_id","corresp":"corresp"}

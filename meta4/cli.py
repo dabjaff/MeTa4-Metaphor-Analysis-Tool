@@ -3,13 +3,11 @@ import os
 from typing import List, Optional
 from . import config
 from .utils import ask, get_menu_choice, show_help, get_timestamp
-from .io import load_vuamc_file
-from .user_upload import ingest_user_file_df
+from .io import load_vuamc_file, load_csv
 from .analysis import single_lemma_report_classic, save_concordance_dual, save_collocations_dual, find_lemma_regex_hits, export_pattern_kwic, export_flat_vuamc_csv, export_mrw_list, export_mrw_list_by_pos
 from .mipvu import mipvu_counts, ensure_normalized
 from .cql import run_cql_query, parse_cql
 from .utils import safe_slug
-from .schemas import REQUIRED_FOR_MIPVU
 from .parser import parse_xml_to_df
 from pathlib import Path
 from difflib import get_close_matches
@@ -27,16 +25,32 @@ def show_tutorial() -> None:
     print('\nWelcome to MeTa4: Metaphor Analysis Tool!\nThis tool analyzes metaphor usage in text corpora using the MIPVU methodology.\nKey terms:\n  - Lemma: Base form of a word (e.g., \'run\' for \'running\', \'runs\').\n  - MRW: Metaphor-Related Word, identified by MIPVU criteria.\n  - LU: Lexical Unit, the denominator for metaphor density.\n  - CQL: Corpus Query Language for pattern searches (e.g., [lemma="run"] [pos="VB.*"]).\n\nHow to use:\n1. Explore the VUAMC corpus or upload your own XML/CSV/TSV file.\n2. Choose an analysis:\n   • Single Lemma: Analyze a specific lemma (e.g., \'run\').\n   • Batch Lemma: Analyze multiple lemmas.\n   • Collocations: Find words co-occurring with a lemma.\n   • Pattern Search: Use regex or CQL for complex queries.\n3. Results are saved in \'results/\' with timestamps.\n\nPress [R] to return to the previous menu at any time, [H] for help or [T] for this tutorial.\n        ')
 
 def analysis_explorer(df: pd.DataFrame, corpus_name: str='VUAMC') -> None:
-                                                                                    
+    # Ensure positional indices are 0..N-1 for all downstream lookups (KWIC/context)
     df = df.reset_index(drop=True)
 
     num_mrw, denom = mipvu_counts(df)
+    is_user = str(df.attrs.get('corpus', '')).lower() == 'user'
     print(f'\n=== {corpus_name} Overview (MIPVU) ===')
     print(f'  Lexical Units (LUs): {denom}')
     print(f"  Unique lemmas: {df.loc[df['lemma'].astype(str).str.len() > 0, 'lemma'].nunique()}")
-    print(f'  Metaphor-Related Words (MRWs): {num_mrw}')
-    print(f'  % MRW: {(num_mrw / denom * 100 if denom else 0):.2f}%')
-    print(f"  MRW per {config.CONFIG['PER_1000']} LUs: {(num_mrw / denom * config.CONFIG['PER_1000'] if denom else 0):.2f}\n")
+    if is_user:
+        # For user files: Show breakdown of metaphor_function values
+        metaphor_counts = df['metaphor_function'].value_counts()
+        if not metaphor_counts.empty:
+            total_lus = denom
+            print('What are the types of values are in the metaphor column:')
+            for i, (value, count) in enumerate(metaphor_counts.items(), 1):
+                percentage = (count / total_lus * 100) if total_lus > 0 else 0
+                print(f'  {i}. {value} ({count}) {percentage:.2f}%')
+        else:
+            print('  No values found in metaphor_function column.')
+    else:
+        # For VUAMC: Standard MRW summary
+        print(f'  Metaphor-Related Words (MRWs): {num_mrw}')
+        print(f'  % MRW: {(num_mrw / denom * 100 if denom else 0):.2f}%')
+        print(f"  MRW per {config.CONFIG['PER_1000']} LUs: {(num_mrw / denom * config.CONFIG['PER_1000'] if denom else 0):.2f}\n")
+    if is_user:
+        print()  # Extra newline for spacing
     while True:
         print(f'{corpus_name} Analysis Menu')
         print('  [1] Single Lemma Analysis\n  [2] Batch Lemma Analysis')
@@ -211,6 +225,8 @@ def vuamc_explorer() -> None:
         vuamc = load_vuamc_file()
         if vuamc is None:
             return
+        # Set corpus attr for VUAMC
+        vuamc.attrs['corpus'] = 'vuamc'
         print('\n\n' + config.HELP['vuamc'].strip() + '\n\n', end='')
         analysis_explorer(ensure_normalized(vuamc), 'VUAMC')
     except FileNotFoundError as e:
@@ -227,6 +243,9 @@ def genre_level_explorer() -> None:
         return
     if vuamc is None:
         return
+    # Ensure corpus attr is set for genre slices too
+    if 'corpus' not in vuamc.attrs:
+        vuamc.attrs['corpus'] = 'vuamc'
     if 'genre' not in vuamc.columns:
         config.logger.warning("No 'genre' column found. Falling back to whole corpus.")
         analysis_explorer(ensure_normalized(vuamc), 'VUAMC')
@@ -273,15 +292,46 @@ def genre_level_explorer() -> None:
     if not chosen:
         print('Unrecognized selection. Returning.')
         return
-                                                                      
+    # Critical: reset index on the genre slice so positions are 0..N-1
     df_g = vuamc[vuamc['genre'].astype(str).str.lower() == chosen.lower()].copy().reset_index(drop=True)
+    # Preserve corpus attr on slice
+    df_g.attrs['corpus'] = 'vuamc'
     print(f'\n\nVUAMC Explorer — Genre: {chosen}\n')
     analysis_explorer(ensure_normalized(df_g), f'VUAMC:{chosen}')
 
 def user_file_explorer() -> None:
-    files = [f for f in os.listdir('.') if f.lower().endswith(('.xml', '.zip', '.csv', '.tsv'))]
+    def _normalize_user_headers(df):
+        cols = (
+            pd.Index(df.columns)
+              .map(lambda c: str(c).strip())
+              .str.replace(r'\s+', '_', regex=True)
+              .str.lower()
+        )
+        df.columns = cols
+        if 'lemma' not in df.columns and 'word' in df.columns:
+            try:
+                df['lemma'] = df['word'].astype(str).str.lower()
+            except Exception:
+                df['lemma'] = df['word']
+        if 'pos' not in df.columns:
+            df['pos'] = 'X'
+        if 'genre' not in df.columns:
+            df['genre'] = 'User'
+        if 'sentence_id' not in df.columns:
+            df['sentence_id'] = range(1, len(df) + 1)
+        # Add defaults for MIPVU-specific columns to prevent KeyErrors in analysis
+        if 'type' not in df.columns:
+            df['type'] = ''
+        if 'subtype' not in df.columns:
+            df['subtype'] = ''
+        if 'mflag' not in df.columns:
+            df['mflag'] = ''
+        return df
+
+    # Updated: Include Excel files in scan
+    files = [f for f in os.listdir('.') if f.lower().endswith(('.xml', '.zip', '.csv', '.tsv', '.xlsx', '.xls'))]
     if not files:
-        config.logger.warning('No compatible files (.xml, .zip, .csv, .tsv) found.')
+        config.logger.warning('No compatible files (.xml, .zip, .csv, .tsv, .xlsx, .xls) found.')
         print('No compatible files found in the current directory.')
         return
     try:
@@ -331,16 +381,28 @@ def user_file_explorer() -> None:
         sel = val
         if sel.isdigit() and 1 <= int(sel) <= len(files):
             chosen = files[int(sel) - 1]
+            path = Path(chosen)  # Use Path for suffix access
             try:
+                ext = str(path.suffix).lower()
                 if chosen.lower().endswith(('.xml', '.zip')):
-                    df = load_vuamc_file() if chosen.lower().startswith('vuamc') else parse_xml_to_df(Path(chosen))
+                    df = load_vuamc_file() if chosen.lower().startswith('vuamc') else parse_xml_to_df(path)
+                elif ext in {'.csv', '.tsv'}:
+                    df = load_csv(chosen)
+                # New: Excel handler
+                elif ext in {'.xlsx', '.xls'}:
+                    try:
+                        df = pd.read_excel(path, sheet_name=0, engine='openpyxl' if ext == '.xlsx' else 'xlrd')
+                    except ImportError as ie:
+                        raise ImportError(f'Excel support requires openpyxl (xlsx) or xlrd (xls). Install with: pip install openpyxl xlrd==1.2.0. Error: {ie}')
                 else:
-                    df = ingest_user_file_df(chosen)
+                    raise ValueError(f'Unsupported file type: {ext}')
+                df = _normalize_user_headers(df)
+                # Set corpus attr for user file (enables flexible MIPVU logic)
+                df.attrs['corpus'] = 'user'
                 col_map = {c.strip().lower(): c for c in df.columns}
-                missing = [col for col in list(REQUIRED_FOR_MIPVU) if col not in col_map]
+                missing = [col for col in config.CONFIG.get('USER_REQUIRED', ['lemma', 'word', 'metaphor_function', 'pos']) if col not in col_map]
                 if missing:
-                    req = ', '.join(list(REQUIRED_FOR_MIPVU))
-                    raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}. Required: {req}. Headers are case-insensitive but must match by name. Tip: press [I] for Instructions or [E] for an example CSV.")
+                    raise ValueError("Missing required columns: " + ", ".join(missing) + ". Required (User Upload): word, metaphor_function. Headers are case-insensitive.")
                 analysis_explorer(ensure_normalized(df), os.path.basename(chosen))
             except Exception as e:
                 config.logger.exception(f'File loading error: {str(e)}')
@@ -394,24 +456,3 @@ def _show_upload_example_csv() -> None:
     except Exception as _e:
         config.logger.warning(f'Failed to create example CSV: {_e}')
         print('Could not create the example CSV. Please ensure you have write permissions.')
-
-
-INSTRUCTIONS_TEXT = '''Upload Instructions (User Files)
-Supported formats:
-  • CSV or TSV with headers
-  • VUAMC XML or a ZIP containing VUAMC‑style XML files
-Required columns for CSV/TSV (case‑insensitive headers):
-  • lemma
-  • word
-  • metaphor_function
-  • pos
-Notes:
-  • Order of columns does not matter.
-  • DFMA / DFMA_PUNCT and similar exclusions are handled via the values in the `metaphor_function` column; no separate `subtype` column is required.
-Tips:
-  • Put your file in the same folder where you run this script.
-  • Choose [User File Analysis] from the main menu, select your file by number.
-  • If you see 'Missing required columns', rename your headers to exactly the required names.
-  • Use [E] Example CSV to see the expected layout.
-  • For XML/ZIP, the loader will parse tokens and apply MIPVU‑style filters automatically.
-'''
